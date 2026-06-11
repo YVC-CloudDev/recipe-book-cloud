@@ -42,3 +42,4 @@ Future AWS endpoints can map to:
 - `DELETE /recipes/{id}`
 
 No AWS secrets should be stored in the frontend.
+# recipe-book-cloud
