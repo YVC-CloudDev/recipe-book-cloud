@@ -1,26 +1,7 @@
-const USERS_KEY = 'recipeBookMockUsers';
-const RECIPES_KEY = 'recipeBookMockRecipes';
+
+const API_BASE_URL = 'https://ydila2lajd.execute-api.eu-north-1.amazonaws.com';
+const TOKEN_KEY = 'recipeBookToken';
 const RESERVED_ADMIN_USERNAME = 'LANA MANAGER';
-
-// Add the AWS API Gateway base URL here later.
-// Example: const API_BASE_URL = 'https://your-api-id.execute-api.region.amazonaws.com/prod';
-// Do not store AWS secrets in frontend code.
-
-function waitForMockNetwork() {
-  return new Promise((resolve) => setTimeout(resolve, 250));
-}
-
-function readCollection(key) {
-  return JSON.parse(localStorage.getItem(key) || '[]');
-}
-
-function writeCollection(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
-
-function createId(prefix) {
-  return `${prefix}-${crypto.randomUUID()}`;
-}
 
 function normalizeUsername(username) {
   return username.trim().toLowerCase();
@@ -60,133 +41,139 @@ function validatePassword(password) {
   return password;
 }
 
-function withoutPassword(user) {
+function saveToken(token) {
+  sessionStorage.setItem(TOKEN_KEY, token);
+}
+
+function getToken() {
+  return sessionStorage.getItem(TOKEN_KEY);
+}
+
+function normalizeUser(user, token) {
   return {
-    id: user.id,
-    username: user.username
+    id: user.userId,
+    userId: user.userId,
+    username: user.username,
+    token
+  };
+}
+
+function normalizeRecipe(recipe) {
+  return {
+    ...recipe,
+    id: recipe.recipeId
+  };
+}
+
+async function apiRequest(path, options = {}) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.message || 'Request failed.');
+  }
+
+  return data;
+}
+
+function authHeaders() {
+  const token = getToken();
+
+  if (!token) {
+    throw new Error('You must be logged in.');
+  }
+
+  return {
+    Authorization: `Bearer ${token}`
   };
 }
 
 export async function registerUser({ username, password }) {
-  await waitForMockNetwork();
-
   const cleanUsername = validateUsername(username);
   const cleanPassword = validatePassword(password);
-  const users = readCollection(USERS_KEY);
-  const usernameExists = users.some(
-    (user) => normalizeUsername(user.username) === normalizeUsername(cleanUsername)
-  );
 
-  if (usernameExists) {
-    throw new Error('Username already exists. Please choose another one.');
-  }
+  await apiRequest('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: cleanUsername,
+      password: cleanPassword
+    })
+  });
 
-  const newUser = {
-    id: createId('user'),
+  return loginUser({
     username: cleanUsername,
     password: cleanPassword
-  };
-
-  writeCollection(USERS_KEY, [...users, newUser]);
-  return withoutPassword(newUser);
+  });
 }
 
 export async function loginUser({ username, password }) {
-  await waitForMockNetwork();
-
   const cleanUsername = validateUsername(username);
-  validatePassword(password);
+  const cleanPassword = validatePassword(password);
 
-  const users = readCollection(USERS_KEY);
-  const user = users.find(
-    (savedUser) =>
-      normalizeUsername(savedUser.username) === normalizeUsername(cleanUsername) &&
-      savedUser.password === password
-  );
+  const data = await apiRequest('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({
+      username: cleanUsername,
+      password: cleanPassword
+    })
+  });
 
-  if (!user) {
-    throw new Error('Incorrect username or password.');
-  }
+  saveToken(data.token);
 
-  return withoutPassword(user);
+  return normalizeUser(data.user, data.token);
 }
 
-export async function getMyRecipes(userId) {
-  await waitForMockNetwork();
+export async function getMyRecipes() {
+  const data = await apiRequest('/recipes', {
+    method: 'GET',
+    headers: authHeaders()
+  });
 
-  return readCollection(RECIPES_KEY)
-    .filter((recipe) => recipe.userId === userId)
-    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  return (data.recipes || []).map(normalizeRecipe);
 }
 
 export async function createRecipe(userId, recipeData) {
-  await waitForMockNetwork();
-
-  const now = new Date().toISOString();
-  const recipes = readCollection(RECIPES_KEY);
-  const recipe = {
-    id: createId('recipe'),
-    userId,
-    name: recipeData.name.trim(),
-    ingredients: recipeData.ingredients.trim(),
-    instructions: recipeData.instructions.trim(),
-    category: recipeData.category,
-    createdAt: now,
-    updatedAt: now
-  };
-
-  writeCollection(RECIPES_KEY, [...recipes, recipe]);
-  return recipe;
-}
-
-export async function updateRecipe(userId, recipeId, recipeData) {
-  await waitForMockNetwork();
-
-  const now = new Date().toISOString();
-  const recipes = readCollection(RECIPES_KEY);
-  const existingRecipe = recipes.find(
-    (recipe) => recipe.id === recipeId && recipe.userId === userId
-  );
-
-  if (!existingRecipe) {
-    throw new Error('Recipe was not found.');
-  }
-
-  const updatedRecipes = recipes.map((recipe) => {
-    if (recipe.id !== recipeId || recipe.userId !== userId) {
-      return recipe;
-    }
-
-    return {
-      ...recipe,
+  const data = await apiRequest('/recipes', {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({
       name: recipeData.name.trim(),
       ingredients: recipeData.ingredients.trim(),
       instructions: recipeData.instructions.trim(),
-      category: recipeData.category,
-      updatedAt: now
-    };
+      category: recipeData.category
+    })
   });
 
-  writeCollection(RECIPES_KEY, updatedRecipes);
-  return updatedRecipes.find((recipe) => recipe.id === recipeId);
+  return normalizeRecipe(data.recipe);
+}
+
+export async function updateRecipe(userId, recipeId, recipeData) {
+  const data = await apiRequest(`/recipes/${recipeId}`, {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify({
+      name: recipeData.name.trim(),
+      ingredients: recipeData.ingredients.trim(),
+      instructions: recipeData.instructions.trim(),
+      category: recipeData.category
+    })
+  });
+
+  return normalizeRecipe(data.recipe);
 }
 
 export async function deleteRecipe(userId, recipeId) {
-  await waitForMockNetwork();
-
-  const recipes = readCollection(RECIPES_KEY);
-  const recipeExists = recipes.some(
-    (recipe) => recipe.id === recipeId && recipe.userId === userId
-  );
-
-  if (!recipeExists) {
-    throw new Error('Recipe was not found.');
-  }
-
-  writeCollection(
-    RECIPES_KEY,
-    recipes.filter((recipe) => recipe.id !== recipeId || recipe.userId !== userId)
-  );
+  await apiRequest(`/recipes/${recipeId}`, {
+    method: 'DELETE',
+    headers: authHeaders()
+  });
 
   return { success: true };
 }
